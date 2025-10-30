@@ -88,22 +88,25 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
+            const issueNumber = ${{ github.event.issue.number }};
             const artifactUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            const message = [
+              '✅ Test combinations generated successfully!',
+              '',
+              `**Artifact:** \`test-combinations-issue-${issueNumber}\``,
+              '',
+              `**Download from:** ${artifactUrl}`,
+              '',
+              'Next steps:',
+              '1. Download the `combination_testcases.xlsx` artifact',
+              '2. Fill in `[Response]` columns',
+              '3. Create a new issue with label `testforge-compile` and attach the filled file'
+            ].join('\n');
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✅ Test combinations generated successfully!
-
-**Artifact:** \`test-combinations-issue-${{ github.event.issue.number }}\`
-
-**Download from:** ${artifactUrl}
-
-Next steps:
-1. Download the \`combination_testcases.xlsx\` artifact
-2. Fill in \`[Response]\` columns
-3. Create a new issue with label \`testforge-compile\` and attach the filled file
-`
+              body: message
             });
