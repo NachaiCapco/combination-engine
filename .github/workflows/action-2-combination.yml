@@ -1,0 +1,103 @@
+name: "Action 2: Generate Test Combinations"
+
+on:
+  workflow_dispatch:
+    inputs:
+      inputFile:
+        description: 'Path to input XLSX/CSV file (relative to repo root, e.g., data/input.xlsx)'
+        required: false
+        default: 'data/example-input.xlsx'
+        type: string
+
+jobs:
+  generate-combinations:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.0'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify input file exists
+        run: |
+          if [ ! -f "${{ inputs.inputFile }}" ]; then
+            echo "Error: Input file '${{ inputs.inputFile }}' not found!"
+            echo "Please ensure the file is committed to the repository in the data/ directory."
+            echo ""
+            echo "To add your file:"
+            echo "  1. Place your XLSX/CSV file in the data/ directory"
+            echo "  2. git add data/your-file.xlsx"
+            echo "  3. git commit -m 'Add test input file'"
+            echo "  4. git push"
+            exit 1
+          fi
+          echo "Input file found: ${{ inputs.inputFile }}"
+          ls -lh "${{ inputs.inputFile }}"
+
+      - name: Start FastAPI server
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 3000 > server.log 2>&1 &
+          echo $! > server.pid
+          sleep 10
+
+      - name: Wait for server to be ready
+        run: |
+          timeout 30 bash -c 'until curl -s http://localhost:3000/health > /dev/null; do sleep 1; done' || {
+            echo "Server failed to start. Logs:"
+            cat server.log
+            exit 1
+          }
+          echo "Server is ready!"
+
+      - name: Generate test combinations
+        run: |
+          echo "Uploading file to generate combinations..."
+          curl -X POST http://localhost:3000/api/v1/combination-test-case \
+            -F "file=@${{ inputs.inputFile }}" \
+            -o combination_testcases.xlsx \
+            -w "\nHTTP Status: %{http_code}\n" \
+            --fail-with-body || {
+              echo "Failed to generate combinations"
+              cat server.log
+              exit 1
+            }
+
+          echo "Combination file generated successfully!"
+          ls -lh combination_testcases.xlsx
+
+      - name: Display server logs
+        if: always()
+        run: |
+          echo "=== Server Logs ==="
+          cat server.log || true
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) || true
+          fi
+
+      - name: Upload combination file
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-combinations
+          path: combination_testcases.xlsx
+          retention-days: 14
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combination-server-logs
+          path: server.log
+          retention-days: 7

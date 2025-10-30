@@ -1,0 +1,14 @@
+version: "3.9"
+services:
+  testforge-api:
+    build: .
+    container_name: testforge-api
+    ports:
+      - "3000:3000"
+    environment:
+      - STORAGE_PATH=/app/workspace
+      - LOG_LEVEL=INFO
+      - GITHUB_REPOSITORY=owner/TestForge
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - ./workspace:/app/workspace

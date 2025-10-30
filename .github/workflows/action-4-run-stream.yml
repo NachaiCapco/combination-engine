@@ -1,0 +1,146 @@
+name: "Action 4: Run Tests (SSE Stream)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      testName:
+        description: 'Test suite name to execute'
+        required: true
+        default: 'github-action-test'
+        type: string
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.0'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify test suite exists
+        run: |
+          if [ ! -d "workspace/${{ inputs.testName }}/generated" ]; then
+            echo "Error: Test suite '${{ inputs.testName }}' not found!"
+            echo "Please run Action 3 (Compile) first to generate the test cases."
+            echo ""
+            echo "Available test suites:"
+            ls -d workspace/*/ 2>/dev/null || echo "  No test suites found"
+            exit 1
+          fi
+          echo "Test suite found: ${{ inputs.testName }}"
+          echo "Test cases:"
+          ls -lh workspace/${{ inputs.testName }}/generated/
+
+      - name: Start FastAPI server
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 3000 > server.log 2>&1 &
+          echo $! > server.pid
+          sleep 10
+
+      - name: Wait for server to be ready
+        run: |
+          timeout 30 bash -c 'until curl -s http://localhost:3000/health > /dev/null; do sleep 1; done' || {
+            echo "Server failed to start. Logs:"
+            cat server.log
+            exit 1
+          }
+          echo "Server is ready!"
+
+      - name: Run tests with SSE streaming
+        run: |
+          echo "Starting test execution for: ${{ inputs.testName }}"
+          echo "Connecting to SSE stream..."
+
+          # Use curl to consume SSE stream and save output
+          timeout 600 curl -N http://localhost:3000/api/v1/run-test-case/${{ inputs.testName }}/stream \
+            2>&1 | tee sse_output.log || {
+              EXIT_CODE=$?
+              if [ $EXIT_CODE -eq 124 ]; then
+                echo "Test execution timeout (10 minutes)"
+              else
+                echo "Test execution failed with code: $EXIT_CODE"
+              fi
+              cat server.log
+              exit 1
+            }
+
+          echo ""
+          echo "=== Test Execution Complete ==="
+
+      - name: Parse test results
+        run: |
+          echo "=== Extracting Test Summary ==="
+          # Extract the final "done" event from SSE output
+          grep -A 5 'event: done' sse_output.log | tail -n 5 || echo "No summary found"
+
+      - name: Verify reports generated
+        run: |
+          echo "=== Checking for generated reports ==="
+          REPORT_DIR=$(ls -dt workspace/${{ inputs.testName }}/Report/*/ 2>/dev/null | head -n 1)
+          if [ -z "$REPORT_DIR" ]; then
+            echo "Error: No report directory found!"
+            exit 1
+          fi
+
+          echo "Latest report: $REPORT_DIR"
+          ls -lh "$REPORT_DIR"
+
+          # Verify key report files exist
+          for file in output.xml report.html log.html; do
+            if [ -f "${REPORT_DIR}${file}" ]; then
+              echo "✓ Found: $file"
+            else
+              echo "✗ Missing: $file"
+            fi
+          done
+
+      - name: Display server logs
+        if: always()
+        run: |
+          echo "=== Server Logs ==="
+          cat server.log || true
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) || true
+          fi
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-stream-output-${{ inputs.testName }}
+          path: |
+            workspace/${{ inputs.testName }}/Report/
+            sse_output.log
+          retention-days: 14
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-server-logs
+          path: server.log
+          retention-days: 7
+
+      - name: Display summary
+        if: always()
+        run: |
+          echo ""
+          echo "========================================="
+          echo "Test Execution Summary"
+          echo "========================================="
+          echo "Test Suite: ${{ inputs.testName }}"
+          echo "Reports available in artifacts: test-stream-output-${{ inputs.testName }}"
+          echo "========================================="

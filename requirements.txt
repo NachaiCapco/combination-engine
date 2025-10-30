@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pandas
+openpyxl
+aiofiles
+python-multipart
+requests
+robotframework
+robotframework-requests
+robotframework-jsonlibrary

@@ -1,0 +1,147 @@
+name: "Action 3: Compile Test Cases"
+
+on:
+  workflow_dispatch:
+    inputs:
+      testName:
+        description: 'Test suite name (alphanumeric and underscores only)'
+        required: true
+        default: 'github-action-test'
+        type: string
+      inputFile:
+        description: 'Path to filled XLSX file with [Response] columns (e.g., data/filled.xlsx)'
+        required: false
+        default: 'data/combination-filled.xlsx'
+        type: string
+
+jobs:
+  compile-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.0'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify input file exists
+        run: |
+          if [ ! -f "${{ inputs.inputFile }}" ]; then
+            echo "Error: Input file '${{ inputs.inputFile }}' not found!"
+            echo "Please ensure the file is committed to the repository in the data/ directory."
+            echo ""
+            echo "To add your file:"
+            echo "  1. Download the combination_testcases.xlsx from previous step"
+            echo "  2. Fill in [Response] columns (e.g., [Response][API]status, [Response][Body]data.hasdata)"
+            echo "  3. Save as ${{ inputs.inputFile }}"
+            echo "  4. git add ${{ inputs.inputFile }}"
+            echo "  5. git commit -m 'Add filled test cases'"
+            echo "  6. git push"
+            exit 1
+          fi
+          echo "Input file found: ${{ inputs.inputFile }}"
+          ls -lh "${{ inputs.inputFile }}"
+
+      - name: Validate testName
+        run: |
+          if ! echo "${{ inputs.testName }}" | grep -qE '^[a-zA-Z0-9_]+$'; then
+            echo "Error: testName must contain only alphanumeric characters and underscores"
+            echo "Provided: ${{ inputs.testName }}"
+            exit 1
+          fi
+          echo "Test name is valid: ${{ inputs.testName }}"
+
+      - name: Start FastAPI server
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 3000 > server.log 2>&1 &
+          echo $! > server.pid
+          sleep 10
+
+      - name: Wait for server to be ready
+        run: |
+          timeout 30 bash -c 'until curl -s http://localhost:3000/health > /dev/null; do sleep 1; done' || {
+            echo "Server failed to start. Logs:"
+            cat server.log
+            exit 1
+          }
+          echo "Server is ready!"
+
+      - name: Compile test cases
+        run: |
+          echo "Compiling test cases for: ${{ inputs.testName }}"
+          curl -X POST http://localhost:3000/api/v1/compile-test-case \
+            -F "testName=${{ inputs.testName }}" \
+            -F "file=@${{ inputs.inputFile }}" \
+            -H "Accept: application/json" \
+            -o compile_response.json \
+            -w "\nHTTP Status: %{http_code}\n" \
+            --fail-with-body || {
+              echo "Failed to compile test cases"
+              cat compile_response.json || true
+              cat server.log
+              exit 1
+            }
+
+          echo ""
+          echo "=== Compilation Response ==="
+          cat compile_response.json | python -m json.tool || cat compile_response.json
+          echo ""
+
+      - name: Verify compiled tests
+        run: |
+          echo "=== Checking generated Robot Framework files ==="
+          if [ -d "workspace/${{ inputs.testName }}/generated" ]; then
+            echo "Generated test files:"
+            ls -lh workspace/${{ inputs.testName }}/generated/
+            echo ""
+            echo "Total test cases: $(ls -1 workspace/${{ inputs.testName }}/generated/*.robot 2>/dev/null | wc -l)"
+          else
+            echo "Error: Generated folder not found!"
+            exit 1
+          fi
+
+      - name: Display sample test case
+        run: |
+          echo "=== Sample Test Case (first .robot file) ==="
+          FIRST_ROBOT=$(ls workspace/${{ inputs.testName }}/generated/*.robot | head -n 1)
+          if [ -f "$FIRST_ROBOT" ]; then
+            cat "$FIRST_ROBOT"
+          fi
+
+      - name: Display server logs
+        if: always()
+        run: |
+          echo "=== Server Logs ==="
+          cat server.log || true
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) || true
+          fi
+
+      - name: Upload compiled tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-tests-${{ inputs.testName }}
+          path: |
+            workspace/${{ inputs.testName }}/
+            compile_response.json
+          retention-days: 30
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-server-logs
+          path: server.log
+          retention-days: 7
