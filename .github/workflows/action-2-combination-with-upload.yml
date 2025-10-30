@@ -3,6 +3,17 @@ name: "Action 2B: Generate Combinations (with base64 upload)"
 on:
   repository_dispatch:
     types: [upload-and-generate-combinations]
+  workflow_dispatch:
+    inputs:
+      file_base64:
+        description: 'Base64-encoded XLSX file content'
+        required: true
+        type: string
+      test_id:
+        description: 'Test ID for artifact naming (optional)'
+        required: false
+        default: 'manual'
+        type: string
 
 jobs:
   generate-combinations:
@@ -15,7 +26,12 @@ jobs:
       - name: Decode uploaded file
         run: |
           echo "Decoding uploaded file from base64..."
-          echo "${{ github.event.client_payload.file_content }}" | base64 -d > uploaded_file.xlsx
+          # Handle both workflow_dispatch and repository_dispatch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "${{ github.event.inputs.file_base64 }}" | base64 -d > uploaded_file.xlsx
+          else
+            echo "${{ github.event.client_payload.file_content }}" | base64 -d > uploaded_file.xlsx
+          fi
           ls -lh uploaded_file.xlsx
 
       - name: Set up Python 3.14
@@ -60,6 +76,6 @@ jobs:
       - name: Upload combination file
         uses: actions/upload-artifact@v4
         with:
-          name: test-combinations-${{ github.event.client_payload.test_id }}
+          name: test-combinations-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.test_id || github.event.client_payload.test_id }}
           path: combination_testcases.xlsx
           retention-days: 14
