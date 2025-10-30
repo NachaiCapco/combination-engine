@@ -91,9 +91,19 @@ jobs:
             }
 
           echo ""
-          echo "=== Compilation Response ==="
+          echo "=========================================="
+          echo "=== 📋 COMPILATION RESPONSE JSON ==="
+          echo "=========================================="
           cat compile_response.json | python -m json.tool || cat compile_response.json
+          echo "=========================================="
           echo ""
+
+          # Add to GitHub Actions Summary
+          echo "## 📋 Compilation Response" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat compile_response.json | python -m json.tool >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Verify compiled tests
         run: |
@@ -102,7 +112,17 @@ jobs:
             echo "Generated test files:"
             ls -lh workspace/${{ inputs.testName }}/generated/
             echo ""
-            echo "Total test cases: $(ls -1 workspace/${{ inputs.testName }}/generated/*.robot 2>/dev/null | wc -l)"
+            TEST_COUNT=$(ls -1 workspace/${{ inputs.testName }}/generated/*.robot 2>/dev/null | wc -l)
+            echo "Total test cases: $TEST_COUNT"
+
+            # Add summary to GitHub Actions Summary
+            echo "## ✅ Compilation Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Test Suite Name:** \`${{ inputs.testName }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Input File:** \`${{ inputs.inputFile }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total Test Cases Generated:** $TEST_COUNT" >> $GITHUB_STEP_SUMMARY
+            echo "- **Output Directory:** \`workspace/${{ inputs.testName }}/generated/\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
           else
             echo "Error: Generated folder not found!"
             exit 1
@@ -110,10 +130,23 @@ jobs:
 
       - name: Display sample test case
         run: |
-          echo "=== Sample Test Case (first .robot file) ==="
+          echo "=========================================="
+          echo "=== 🤖 Sample Test Case (first .robot file) ==="
+          echo "=========================================="
           FIRST_ROBOT=$(ls workspace/${{ inputs.testName }}/generated/*.robot | head -n 1)
           if [ -f "$FIRST_ROBOT" ]; then
             cat "$FIRST_ROBOT"
+            echo ""
+            echo "=========================================="
+
+            # Add to GitHub Actions Summary
+            echo "## 🤖 Sample Generated Test Case" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**File:** \`$(basename $FIRST_ROBOT)\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```robotframework' >> $GITHUB_STEP_SUMMARY
+            cat "$FIRST_ROBOT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Display server logs
