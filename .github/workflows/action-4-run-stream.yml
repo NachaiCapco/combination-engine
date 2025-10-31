@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       testName:
-        description: 'Test suite name to execute'
+        description: 'Test suite name to execute (must match Action 3 compilation)'
         required: true
-        default: 'github-action-test'
+        default: 'tc002'
         type: string
-      downloadFromRun:
-        description: 'Optional: Download compiled tests from Action 3 run ID (e.g., 1234567890)'
-        required: false
+      compileRunId:
+        description: 'Action 3 run ID to download compiled tests from (required)'
+        required: true
         type: string
 
 jobs:
@@ -32,23 +32,22 @@ jobs:
           pip install -r requirements.txt
 
       - name: Download compiled tests from Action 3
-        if: inputs.downloadFromRun != ''
         run: |
           echo "=========================================="
           echo "📥 Downloading compiled tests from Action 3"
           echo "=========================================="
-          echo "Run ID: ${{ inputs.downloadFromRun }}"
+          echo "Run ID: ${{ inputs.compileRunId }}"
           echo "Test Suite: ${{ inputs.testName }}"
           echo ""
 
           # Download artifact using GitHub CLI
-          gh run download ${{ inputs.downloadFromRun }} \
+          gh run download ${{ inputs.compileRunId }} \
             --name "compiled-tests-${{ inputs.testName }}" \
             --dir workspace_download || {
               echo "❌ Failed to download artifact 'compiled-tests-${{ inputs.testName }}'"
               echo ""
               echo "Please check:"
-              echo "1. The run ID is correct"
+              echo "1. The run ID is correct: ${{ inputs.compileRunId }}"
               echo "2. Action 3 completed successfully for test suite '${{ inputs.testName }}'"
               echo "3. The artifact hasn't expired (30 day retention)"
               echo ""
@@ -63,10 +62,17 @@ jobs:
           mkdir -p workspace
           if [ -d "workspace_download/${{ inputs.testName }}" ]; then
             mv workspace_download/${{ inputs.testName }} workspace/
-            echo "✅ Compiled tests downloaded successfully"
-            ls -lh workspace/${{ inputs.testName }}/generated/
+            echo "✅ Compiled tests downloaded successfully!"
+            echo ""
+            echo "Generated test cases:"
+            ls -lh workspace/${{ inputs.testName }}/generated/ | head -15
+            echo ""
+            TEST_COUNT=$(ls -1 workspace/${{ inputs.testName }}/generated/*.robot 2>/dev/null | wc -l | tr -d ' ')
+            echo "Total: $TEST_COUNT test case(s)"
           else
             echo "❌ Error: Downloaded artifact has unexpected structure"
+            echo "Expected: workspace_download/${{ inputs.testName }}/"
+            echo "Actual contents:"
             ls -R workspace_download/
             exit 1
           fi
@@ -74,40 +80,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Verify test suite exists
+      - name: Verify test suite ready
         run: |
           echo "=========================================="
-          echo "🔍 Verifying test suite"
+          echo "✅ Test suite ready: ${{ inputs.testName }}"
           echo "=========================================="
-
-          if [ ! -d "workspace/${{ inputs.testName }}/generated" ]; then
-            echo "❌ Error: Test suite '${{ inputs.testName }}' not found!"
-            echo ""
-            echo "Available test suites in workspace:"
-            ls -d workspace/*/ 2>/dev/null || echo "  No test suites found"
-            echo ""
-            echo "📋 To fix this, you have 2 options:"
-            echo ""
-            echo "Option 1: Download from Action 3 artifacts (Recommended)"
-            echo "  1. Go to Actions → Action 3: Compile Test Cases"
-            echo "  2. Find the run where you compiled '${{ inputs.testName }}'"
-            echo "  3. Copy the run ID from the URL (e.g., 1234567890)"
-            echo "  4. Re-run this workflow with the run ID in 'downloadFromRun' field"
-            echo ""
-            echo "Option 2: Commit compiled tests to repository"
-            echo "  1. Run Action 3 to compile test cases"
-            echo "  2. Download the 'compiled-tests-${{ inputs.testName }}' artifact"
-            echo "  3. Extract and commit workspace/${{ inputs.testName }}/ to the repo"
-            echo "  4. git add workspace/${{ inputs.testName }}"
-            echo "  5. git commit && git push"
-            echo ""
-            exit 1
-          fi
-
-          echo "✅ Test suite found: ${{ inputs.testName }}"
           echo ""
-          echo "Test cases:"
-          ls -lh workspace/${{ inputs.testName }}/generated/
+          echo "Stream URL will be: http://localhost:3000/api/v1/run-test-case/${{ inputs.testName }}/stream"
           echo "=========================================="
 
       - name: Start FastAPI server
