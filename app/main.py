@@ -9,10 +9,18 @@ from app.routers.download_router import router as download_router
 from app.routers.github_router import router as github_router
 from app.routers.health_router import router as health_router
 
-# Fix for Windows: Use WindowsSelectorEventLoopPolicy to support subprocesses
+# Fix for Windows: Set event loop policy to support subprocesses
 # The default ProactorEventLoop on Windows doesn't support subprocess operations
 if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # For Python 3.8+, use WindowsSelectorEventLoopPolicy
+    # This policy uses the SelectorEventLoop which supports subprocess operations
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except AttributeError:
+        # Fallback for Python versions where WindowsSelectorEventLoopPolicy doesn't exist
+        # Create a new event loop with proper configuration
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
 # Configure FastAPI with explicit docs and OpenAPI URLs so Swagger UI and Redoc are
 # available at /docs and /redoc respectively. Keep a named openapi url.
