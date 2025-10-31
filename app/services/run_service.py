@@ -1,8 +1,11 @@
 from pathlib import Path
-import subprocess, datetime, re, asyncio, os
+import subprocess, datetime, re, asyncio, os, sys
 from typing import Tuple, List, Dict, Any, AsyncGenerator
 import xml.etree.ElementTree as ET
 import time
+from concurrent.futures import ThreadPoolExecutor
+import queue
+import threading
 
 def run_robot_and_get_report(gen_dir: Path, report_dir: Path) -> Tuple[Path, List[str], str]:
     """
@@ -25,10 +28,24 @@ def run_robot_and_get_report(gen_dir: Path, report_dir: Path) -> Tuple[Path, Lis
     return out_dir, logs, ts
 
 
+def _read_process_output(proc: subprocess.Popen, output_queue: queue.Queue):
+    """
+    Read subprocess output in a separate thread and put lines in a queue.
+    This function runs in a background thread.
+    """
+    if proc.stdout:
+        for line in iter(proc.stdout.readline, b''):
+            output_queue.put(('line', line))
+    proc.stdout.close()
+    proc.wait()
+    output_queue.put(('done', proc.returncode))
+
+
 async def run_robot_streaming(gen_dir: Path, report_dir: Path) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run Robot Framework tests with real-time streaming of test case results.
-    
+    Cross-platform implementation using threading (works on Windows and Linux).
+
     Yields:
         Dict with keys:
             - 'type': 'connect' | 'process' | 'pass' | 'fail' | 'skip' | 'done'
@@ -37,22 +54,37 @@ async def run_robot_streaming(gen_dir: Path, report_dir: Path) -> AsyncGenerator
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     out_dir = report_dir / ts
     out_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Send connection event
     yield {
         'type': 'connect',
         'data': {'status': 'connected', 'message': 'Test execution started'}
     }
-    
+
     # Run Robot Framework with --console verbose for real-time output
-    # Use PYTHONUNBUFFERED to disable line buffering
+    # Use subprocess.Popen with threading for cross-platform compatibility
     cmd = ["robot", "--console", "verbose", "--outputdir", str(out_dir), str(gen_dir)]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"}
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+
+    # Start subprocess
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        bufsize=1  # Line buffered
     )
+
+    # Create queue for communication between threads
+    output_queue: queue.Queue = queue.Queue()
+
+    # Start reader thread
+    reader_thread = threading.Thread(
+        target=_read_process_output,
+        args=(proc, output_queue),
+        daemon=True
+    )
+    reader_thread.start()
     
     # Regex patterns for Robot Framework --console verbose output:
     # 1. Test header line: "TC 001" or "Generated.TC 001"
@@ -60,56 +92,76 @@ async def run_robot_streaming(gen_dir: Path, report_dir: Path) -> AsyncGenerator
     # 3. Skip detection: "SKIP" keyword in result line
     test_header_pattern = re.compile(r"^(?:Generated\.)?(\w+[_\s]\d+)\s*$")
     test_result_pattern = re.compile(r"^(?:Generated\.)?(\w+[_\s]\d+)\s+\|\s+(PASS|FAIL|SKIP)\s+\|(.*)$")
-    
+
     output_xml_path = out_dir / "output.xml"
-    
-    if proc.stdout:
-        async for line_bytes in proc.stdout:
-            line = line_bytes.decode('utf-8').rstrip()
-            
-            # Check for test result first (has priority)
-            result_match = test_result_pattern.match(line)
-            if result_match:
-                case_name_raw = result_match.group(1).strip()
-                # Normalize: "TC 089" → "TC_089"
-                case_name = case_name_raw.replace(' ', '_')
-                status = result_match.group(2).upper()  # 'PASS', 'FAIL', or 'SKIP'
-                console_message = result_match.group(3).strip() if len(result_match.groups()) > 2 else ''
-                
-                # Map to event type
-                event_type = status.lower()  # 'pass', 'fail', or 'skip'
-                
-                # Use console message directly during streaming
-                # Note: Don't try to parse output.xml here - it's incomplete while robot is running
-                message = console_message if console_message else f'Test {status.lower()}'
-                
-                yield {
-                    'type': event_type,
-                    'data': {
-                        'case': case_name,
-                        'status': status.lower(),
-                        'message': message
+
+    # Read output from queue
+    process_running = True
+    while process_running:
+        try:
+            # Get item from queue with timeout
+            item = await asyncio.get_event_loop().run_in_executor(
+                None,
+                output_queue.get,
+                True,  # block
+                0.1    # timeout
+            )
+
+            msg_type, data = item
+
+            if msg_type == 'done':
+                # Process finished
+                process_running = False
+                break
+            elif msg_type == 'line':
+                line = data.decode('utf-8').rstrip()
+
+                # Check for test result first (has priority)
+                result_match = test_result_pattern.match(line)
+                if result_match:
+                    case_name_raw = result_match.group(1).strip()
+                    # Normalize: "TC 089" → "TC_089"
+                    case_name = case_name_raw.replace(' ', '_')
+                    status = result_match.group(2).upper()  # 'PASS', 'FAIL', or 'SKIP'
+                    console_message = result_match.group(3).strip() if len(result_match.groups()) > 2 else ''
+
+                    # Map to event type
+                    event_type = status.lower()  # 'pass', 'fail', or 'skip'
+
+                    # Use console message directly during streaming
+                    # Note: Don't try to parse output.xml here - it's incomplete while robot is running
+                    message = console_message if console_message else f'Test {status.lower()}'
+
+                    yield {
+                        'type': event_type,
+                        'data': {
+                            'case': case_name,
+                            'status': status.lower(),
+                            'message': message
+                        }
                     }
-                }
-                continue
-            
-            # Check for test start (process state)
-            start_match = test_header_pattern.match(line)
-            if start_match:
-                case_name_raw = start_match.group(1).strip()
-                # Normalize: "TC 089" → "TC_089"
-                case_name = case_name_raw.replace(' ', '_')
-                
-                yield {
-                    'type': 'process',
-                    'data': {
-                        'case': case_name,
-                        'status': 'running',
-                        'message': f'Running {case_name}'
+                    continue
+
+                # Check for test start (process state)
+                start_match = test_header_pattern.match(line)
+                if start_match:
+                    case_name_raw = start_match.group(1).strip()
+                    # Normalize: "TC 089" → "TC_089"
+                    case_name = case_name_raw.replace(' ', '_')
+
+                    yield {
+                        'type': 'process',
+                        'data': {
+                            'case': case_name,
+                            'status': 'running',
+                            'message': f'Running {case_name}'
+                        }
                     }
-                }
-    
-    await proc.wait()
+        except queue.Empty:
+            # No data available, continue loop
+            # This allows other async tasks to run
+            await asyncio.sleep(0.01)
+            continue
     
     # Parse output.xml for final summary
     summary = parse_output_xml(out_dir / "output.xml")
