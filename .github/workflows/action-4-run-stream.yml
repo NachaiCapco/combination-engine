@@ -58,51 +58,138 @@ jobs:
 
       - name: Run tests with SSE streaming
         run: |
-          echo "Starting test execution for: ${{ inputs.testName }}"
+          echo "=========================================="
+          echo "🚀 Starting Test Execution"
+          echo "=========================================="
+          echo "Test Suite: ${{ inputs.testName }}"
           echo "Connecting to SSE stream..."
+          echo "=========================================="
+          echo ""
 
-          # Use curl to consume SSE stream and save output
+          # Use curl to consume SSE stream and display in real-time
           timeout 600 curl -N http://localhost:3000/api/v1/run-test-case/${{ inputs.testName }}/stream \
-            2>&1 | tee sse_output.log || {
+            2>&1 | tee sse_output.log | while IFS= read -r line; do
+              # Highlight important events
+              if echo "$line" | grep -q "event: start"; then
+                echo "▶️  $line"
+              elif echo "$line" | grep -q "event: progress"; then
+                echo "⏳ $line"
+              elif echo "$line" | grep -q "event: done"; then
+                echo "✅ $line"
+              elif echo "$line" | grep -q "event: error"; then
+                echo "❌ $line"
+              else
+                echo "$line"
+              fi
+            done || {
               EXIT_CODE=$?
               if [ $EXIT_CODE -eq 124 ]; then
-                echo "Test execution timeout (10 minutes)"
+                echo ""
+                echo "⏰ Test execution timeout (10 minutes)"
               else
-                echo "Test execution failed with code: $EXIT_CODE"
+                echo ""
+                echo "❌ Test execution failed with code: $EXIT_CODE"
               fi
               cat server.log
               exit 1
             }
 
           echo ""
-          echo "=== Test Execution Complete ==="
+          echo "=========================================="
+          echo "✅ Test Execution Complete"
+          echo "=========================================="
 
       - name: Parse test results
         run: |
-          echo "=== Extracting Test Summary ==="
+          echo "=========================================="
+          echo "📊 Extracting Test Summary"
+          echo "=========================================="
+
           # Extract the final "done" event from SSE output
-          grep -A 5 'event: done' sse_output.log | tail -n 5 || echo "No summary found"
+          if grep -q 'event: done' sse_output.log; then
+            echo ""
+            echo "✅ Test execution completed successfully!"
+            echo ""
+            grep -A 10 'event: done' sse_output.log | tail -n 10
+
+            # Try to extract JSON data from the done event
+            DONE_DATA=$(grep -A 10 'event: done' sse_output.log | grep '^data:' | sed 's/^data: //')
+
+            if [ ! -z "$DONE_DATA" ]; then
+              echo ""
+              echo "Test Results JSON:"
+              echo "$DONE_DATA" | python -m json.tool 2>/dev/null || echo "$DONE_DATA"
+
+              # Add to GitHub Actions Summary
+              echo "## 📊 Test Execution Results" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Test Suite:** \`${{ inputs.testName }}\`" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Summary Data" >> $GITHUB_STEP_SUMMARY
+              echo '```json' >> $GITHUB_STEP_SUMMARY
+              echo "$DONE_DATA" | python -m json.tool 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "$DONE_DATA" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️  No 'done' event found in output"
+            echo "This might indicate the test execution did not complete properly"
+          fi
+
+          echo "=========================================="
 
       - name: Verify reports generated
         run: |
-          echo "=== Checking for generated reports ==="
+          echo "=========================================="
+          echo "📁 Checking Generated Reports"
+          echo "=========================================="
+
           REPORT_DIR=$(ls -dt workspace/${{ inputs.testName }}/Report/*/ 2>/dev/null | head -n 1)
           if [ -z "$REPORT_DIR" ]; then
-            echo "Error: No report directory found!"
+            echo "❌ Error: No report directory found!"
             exit 1
           fi
 
-          echo "Latest report: $REPORT_DIR"
+          echo "✅ Latest report directory: $REPORT_DIR"
+          echo ""
+          echo "Report contents:"
           ls -lh "$REPORT_DIR"
+          echo ""
 
           # Verify key report files exist
+          echo "Verifying key report files:"
+          MISSING_FILES=0
           for file in output.xml report.html log.html; do
             if [ -f "${REPORT_DIR}${file}" ]; then
-              echo "✓ Found: $file"
+              echo "  ✅ Found: $file"
             else
-              echo "✗ Missing: $file"
+              echo "  ❌ Missing: $file"
+              MISSING_FILES=$((MISSING_FILES + 1))
             fi
           done
+
+          echo ""
+          echo "=========================================="
+
+          # Add report info to Summary
+          echo "## 📁 Generated Reports" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Report Directory:** \`${REPORT_DIR}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Available Files:**" >> $GITHUB_STEP_SUMMARY
+          for file in output.xml report.html log.html; do
+            if [ -f "${REPORT_DIR}${file}" ]; then
+              echo "- ✅ \`$file\`" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ \`$file\` (missing)" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Download full reports from the artifacts section below." >> $GITHUB_STEP_SUMMARY
+
+          if [ $MISSING_FILES -gt 0 ]; then
+            echo "⚠️  Warning: $MISSING_FILES file(s) missing"
+          fi
 
       - name: Display server logs
         if: always()
@@ -138,9 +225,24 @@ jobs:
         if: always()
         run: |
           echo ""
-          echo "========================================="
-          echo "Test Execution Summary"
-          echo "========================================="
+          echo "=========================================="
+          echo "🎯 Test Execution Summary"
+          echo "=========================================="
           echo "Test Suite: ${{ inputs.testName }}"
-          echo "Reports available in artifacts: test-stream-output-${{ inputs.testName }}"
-          echo "========================================="
+          echo "Artifact Name: test-stream-output-${{ inputs.testName }}"
+          echo ""
+          echo "✅ Test execution workflow completed!"
+          echo "📦 Check artifacts below for detailed reports"
+          echo "📊 View the Summary tab for quick results"
+          echo "=========================================="
+
+          # Final summary to GitHub Actions Summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test Reports:** \`test-stream-output-${{ inputs.testName }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Server Logs:** \`run-server-logs\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 💡 Download artifacts from the artifacts section at the top of this page." >> $GITHUB_STEP_SUMMARY
