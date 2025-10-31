@@ -59,23 +59,33 @@ jobs:
             }
 
           # Move downloaded files to workspace
-          mkdir -p workspace
-          if [ -d "workspace_download/${{ inputs.testName }}" ]; then
+          # The artifact structure is: workspace_download/workspace/testName/ or workspace_download/testName/
+          if [ -d "workspace_download/workspace/${{ inputs.testName }}" ]; then
+            # Structure: workspace_download/workspace/testName/
+            mv workspace_download/workspace workspace
+            echo "✅ Compiled tests downloaded successfully!"
+          elif [ -d "workspace_download/${{ inputs.testName }}" ]; then
+            # Structure: workspace_download/testName/
+            mkdir -p workspace
             mv workspace_download/${{ inputs.testName }} workspace/
             echo "✅ Compiled tests downloaded successfully!"
-            echo ""
-            echo "Generated test cases:"
-            ls -lh workspace/${{ inputs.testName }}/generated/ | head -15
-            echo ""
-            TEST_COUNT=$(ls -1 workspace/${{ inputs.testName }}/generated/*.robot 2>/dev/null | wc -l | tr -d ' ')
-            echo "Total: $TEST_COUNT test case(s)"
           else
             echo "❌ Error: Downloaded artifact has unexpected structure"
-            echo "Expected: workspace_download/${{ inputs.testName }}/"
+            echo "Expected either:"
+            echo "  - workspace_download/workspace/${{ inputs.testName }}/"
+            echo "  - workspace_download/${{ inputs.testName }}/"
+            echo ""
             echo "Actual contents:"
             ls -R workspace_download/
             exit 1
           fi
+
+          echo ""
+          echo "Generated test cases:"
+          ls -lh workspace/${{ inputs.testName }}/generated/ | head -15
+          echo ""
+          TEST_COUNT=$(ls -1 workspace/${{ inputs.testName }}/generated/*.robot 2>/dev/null | wc -l | tr -d ' ')
+          echo "Total: $TEST_COUNT test case(s)"
           echo "=========================================="
         env:
           GH_TOKEN: ${{ github.token }}
