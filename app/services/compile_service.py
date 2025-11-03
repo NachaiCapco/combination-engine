@@ -3,6 +3,7 @@ from typing import Tuple
 import re
 import pandas as pd
 from app.core.config import STORAGE_PATH
+from app.core.utils_io import normalize_cell
 
 def safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_\-]+", "_", name).strip("_") or "TestForgeSuite"
@@ -212,40 +213,46 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
         
         # Extract request data
         # Support sentinel values: [EMPTY], [NULL], [EMPTY_ARRAY], [EMPTY_OBJECT]
-        # Note: normalize_cell() already converts these to "", None, [], {}
+        # normalize_cell() converts these to "", None, [], {}
         body = {}
         for k, v in row.items():
             if k.startswith("[Request][Body]"):
                 field = k.replace("[Request][Body]", "")
+                # Normalize the value to handle sentinel keywords
+                normalized = normalize_cell(v)
                 # Include field if:
-                # 1. v is explicitly "" (empty string sentinel)
-                # 2. v is explicitly [] (empty array sentinel)
-                # 3. v is explicitly {} (empty object sentinel)
-                # 4. v has actual content
-                # Skip only if v is None (which means blank cell or [NULL])
-                if v is not None or str(row.get(k, "")).strip().upper() == "[NULL]":
-                    body[field] = v
-        
+                # 1. normalized is explicitly "" (empty string sentinel [EMPTY])
+                # 2. normalized is explicitly [] (empty array sentinel [EMPTY_ARRAY])
+                # 3. normalized is explicitly {} (empty object sentinel [EMPTY_OBJECT])
+                # 4. normalized is None and original was [NULL] (include as JSON null)
+                # 5. normalized has actual content
+                # Skip only if normalized is None AND original was blank/empty
+                if normalized is not None or str(v).strip().upper() == "[NULL]":
+                    body[field] = normalized
+
         headers = {}
         for k, v in row.items():
             if k.startswith("[Request][Header]"):
                 field = k.replace("[Request][Header]", "")
-                if v is not None or str(row.get(k, "")).strip().upper() == "[NULL]":
-                    headers[field] = v
-        
+                normalized = normalize_cell(v)
+                if normalized is not None or str(v).strip().upper() == "[NULL]":
+                    headers[field] = normalized
+
         params = {}
         for k, v in row.items():
             if k.startswith("[Request][Params]"):
                 field = k.replace("[Request][Params]", "")
-                if v is not None or str(row.get(k, "")).strip().upper() == "[NULL]":
-                    params[field] = v
-        
+                normalized = normalize_cell(v)
+                if normalized is not None or str(v).strip().upper() == "[NULL]":
+                    params[field] = normalized
+
         query = {}
         for k, v in row.items():
             if k.startswith("[Request][Query]"):
                 field = k.replace("[Request][Query]", "")
-                if v is not None or str(row.get(k, "")).strip().upper() == "[NULL]":
-                    query[field] = v
+                normalized = normalize_cell(v)
+                if normalized is not None or str(v).strip().upper() == "[NULL]":
+                    query[field] = normalized
 
 
         lines = [ROBOT_HEADER.format(base_url=base_url)]
