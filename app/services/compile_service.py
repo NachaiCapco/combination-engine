@@ -227,6 +227,11 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                     # This preserves: 200 as int, "200" as str, true as bool
                     assign_by_path(headers, field, normalized)
 
+        # Add default User-Agent if not specified to avoid bot blocking by Cloudflare/WAF
+        # Always set User-Agent to prevent 403 Forbidden from security services
+        if "User-Agent" not in headers:
+            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
         params = {}
         for k, v in row.items():
             if k.startswith("[Request][Params]"):
