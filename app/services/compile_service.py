@@ -3,7 +3,7 @@ from typing import Tuple
 import re
 import pandas as pd
 from app.core.config import STORAGE_PATH
-from app.core.utils_io import normalize_cell
+from app.core.utils_io import normalize_cell, assign_by_path
 
 def safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_\-]+", "_", name).strip("_") or "TestForgeSuite"
@@ -199,6 +199,7 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
         # Extract request data
         # Support sentinel values: [EMPTY], [NULL], [EMPTY_ARRAY], [EMPTY_OBJECT]
         # normalize_cell() converts these to "", None, [], {}
+        # Use assign_by_path() to build nested JSON structures from dot-notation paths
         body = {}
         for k, v in row.items():
             if k.startswith("[Request][Body]"):
@@ -213,7 +214,8 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                 # 5. normalized has actual content
                 # Skip only if normalized is None AND original was blank/empty
                 if normalized is not None or str(v).strip().upper() == "[NULL]":
-                    body[field] = normalized
+                    # Use assign_by_path to build nested structure from paths like "data.agent.agentName"
+                    assign_by_path(body, field, normalized)
 
         headers = {}
         for k, v in row.items():
@@ -221,7 +223,8 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                 field = k.replace("[Request][Header]", "")
                 normalized = normalize_cell(v)
                 if normalized is not None or str(v).strip().upper() == "[NULL]":
-                    headers[field] = normalized
+                    # Headers are typically flat, but support nesting if needed
+                    assign_by_path(headers, field, normalized)
 
         params = {}
         for k, v in row.items():
@@ -229,7 +232,7 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                 field = k.replace("[Request][Params]", "")
                 normalized = normalize_cell(v)
                 if normalized is not None or str(v).strip().upper() == "[NULL]":
-                    params[field] = normalized
+                    assign_by_path(params, field, normalized)
 
         query = {}
         for k, v in row.items():
@@ -237,7 +240,7 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                 field = k.replace("[Request][Query]", "")
                 normalized = normalize_cell(v)
                 if normalized is not None or str(v).strip().upper() == "[NULL]":
-                    query[field] = normalized
+                    assign_by_path(query, field, normalized)
 
 
         lines = [ROBOT_HEADER.format(base_url=base_url)]
