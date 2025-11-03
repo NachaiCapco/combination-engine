@@ -1,0 +1,364 @@
+name: "Compile and Run Tests"
+
+on:
+  workflow_dispatch:
+    inputs:
+      testName:
+        description: 'Test suite name (alphanumeric and underscores only)'
+        required: true
+        default: 'github-action-test'
+        type: string
+      inputFile:
+        description: 'Path to filled XLSX file with [Response] columns (e.g., data/filled.xlsx)'
+        required: false
+        default: 'data/combination-filled.xlsx'
+        type: string
+
+jobs:
+  compile-and-run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.0'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify input file exists
+        run: |
+          if [ ! -f "${{ inputs.inputFile }}" ]; then
+            echo "Error: Input file '${{ inputs.inputFile }}' not found!"
+            echo "Please ensure the file is committed to the repository in the data/ directory."
+            echo ""
+            echo "To add your file:"
+            echo "  1. Download the combination_testcases.xlsx from previous step"
+            echo "  2. Fill in [Response] columns (e.g., [Response][API]status, [Response][Body]data.hasdata)"
+            echo "  3. Save as ${{ inputs.inputFile }}"
+            echo "  4. git add ${{ inputs.inputFile }}"
+            echo "  5. git commit -m 'Add filled test cases'"
+            echo "  6. git push"
+            exit 1
+          fi
+          echo "Input file found: ${{ inputs.inputFile }}"
+          ls -lh "${{ inputs.inputFile }}"
+
+      - name: Validate testName
+        run: |
+          if ! echo "${{ inputs.testName }}" | grep -qE '^[a-zA-Z0-9_]+$'; then
+            echo "Error: testName must contain only alphanumeric characters and underscores"
+            echo "Provided: ${{ inputs.testName }}"
+            exit 1
+          fi
+          echo "Test name is valid: ${{ inputs.testName }}"
+
+      - name: Start FastAPI server
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 3000 > server.log 2>&1 &
+          echo $! > server.pid
+          sleep 10
+
+      - name: Wait for server to be ready
+        run: |
+          timeout 30 bash -c 'until curl -s http://localhost:3000/health > /dev/null; do sleep 1; done' || {
+            echo "Server failed to start. Logs:"
+            cat server.log
+            exit 1
+          }
+          echo "Server is ready!"
+
+      # ========================================
+      # COMPILE PHASE
+      # ========================================
+      - name: Compile test cases
+        run: |
+          echo "=========================================="
+          echo "🔨 COMPILING TEST CASES"
+          echo "=========================================="
+          echo "Test Suite: ${{ inputs.testName }}"
+          echo "Input File: ${{ inputs.inputFile }}"
+          echo ""
+
+          curl -X POST http://localhost:3000/api/v1/compile-test-case \
+            -F "testName=${{ inputs.testName }}" \
+            -F "file=@${{ inputs.inputFile }}" \
+            -H "Accept: application/json" \
+            -o compile_response.json \
+            -w "\nHTTP Status: %{http_code}\n" \
+            --fail-with-body || {
+              echo "Failed to compile test cases"
+              cat compile_response.json || true
+              cat server.log
+              exit 1
+            }
+
+          echo ""
+          echo "=========================================="
+          echo "=== 📋 COMPILATION RESPONSE JSON ==="
+          echo "=========================================="
+          cat compile_response.json | python -m json.tool || cat compile_response.json
+          echo "=========================================="
+          echo ""
+
+          # Add to GitHub Actions Summary
+          echo "## 📋 Compilation Response" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat compile_response.json | python -m json.tool >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify compiled tests
+        run: |
+          echo "=== Checking generated Robot Framework files ==="
+          if [ -d "workspace/${{ inputs.testName }}/generated" ]; then
+            echo "Generated test files:"
+            ls -lh workspace/${{ inputs.testName }}/generated/
+            echo ""
+            TEST_COUNT=$(ls -1 workspace/${{ inputs.testName }}/generated/*.robot 2>/dev/null | wc -l)
+            echo "Total test cases: $TEST_COUNT"
+
+            # Add summary to GitHub Actions Summary
+            echo "## ✅ Compilation Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Test Suite Name:** \`${{ inputs.testName }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Input File:** \`${{ inputs.inputFile }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total Test Cases Generated:** $TEST_COUNT" >> $GITHUB_STEP_SUMMARY
+            echo "- **Output Directory:** \`workspace/${{ inputs.testName }}/generated/\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Error: Generated folder not found!"
+            exit 1
+          fi
+
+      - name: Display sample test case
+        run: |
+          echo "=========================================="
+          echo "=== 🤖 Sample Test Case (first .robot file) ==="
+          echo "=========================================="
+          FIRST_ROBOT=$(ls workspace/${{ inputs.testName }}/generated/*.robot | head -n 1)
+          if [ -f "$FIRST_ROBOT" ]; then
+            cat "$FIRST_ROBOT"
+            echo ""
+            echo "=========================================="
+
+            # Add to GitHub Actions Summary
+            echo "## 🤖 Sample Generated Test Case" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**File:** \`$(basename $FIRST_ROBOT)\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```robotframework' >> $GITHUB_STEP_SUMMARY
+            cat "$FIRST_ROBOT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ========================================
+      # RUN PHASE
+      # ========================================
+      - name: Run tests with SSE streaming
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "🚀 RUNNING TESTS"
+          echo "=========================================="
+          echo "Test Suite: ${{ inputs.testName }}"
+          echo "Connecting to SSE stream..."
+          echo "=========================================="
+          echo ""
+
+          # Use curl to consume SSE stream and display in real-time
+          timeout 600 curl -N http://localhost:3000/api/v1/run-test-case/${{ inputs.testName }}/stream \
+            2>&1 | tee sse_output.log | while IFS= read -r line; do
+              # Highlight important events
+              if echo "$line" | grep -q "event: connect"; then
+                echo "🔗 $line"
+              elif echo "$line" | grep -q "event: process"; then
+                echo "⚙️  $line"
+              elif echo "$line" | grep -q "event: pass"; then
+                echo "✅ $line"
+              elif echo "$line" | grep -q "event: fail"; then
+                echo "❌ $line"
+              elif echo "$line" | grep -q "event: skip"; then
+                echo "⏭️  $line"
+              elif echo "$line" | grep -q "event: done"; then
+                echo "🏁 $line"
+              elif echo "$line" | grep -q "event: error"; then
+                echo "💥 $line"
+              else
+                echo "$line"
+              fi
+            done || {
+              EXIT_CODE=$?
+              if [ $EXIT_CODE -eq 124 ]; then
+                echo ""
+                echo "⏰ Test execution timeout (10 minutes)"
+              else
+                echo ""
+                echo "❌ Test execution failed with code: $EXIT_CODE"
+              fi
+              cat server.log
+              exit 1
+            }
+
+          echo ""
+          echo "=========================================="
+          echo "✅ Test Execution Complete"
+          echo "=========================================="
+
+      - name: Parse test results
+        run: |
+          echo "=========================================="
+          echo "📊 Extracting Test Summary"
+          echo "=========================================="
+
+          # Extract the final "done" event from SSE output
+          if grep -q 'event: done' sse_output.log; then
+            echo ""
+            echo "✅ Test execution completed successfully!"
+            echo ""
+            grep -A 10 'event: done' sse_output.log | tail -n 10
+
+            # Try to extract JSON data from the done event
+            DONE_DATA=$(grep -A 10 'event: done' sse_output.log | grep '^data:' | sed 's/^data: //')
+
+            if [ ! -z "$DONE_DATA" ]; then
+              echo ""
+              echo "Test Results JSON:"
+              echo "$DONE_DATA" | python -m json.tool 2>/dev/null || echo "$DONE_DATA"
+
+              # Add to GitHub Actions Summary
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "---" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "## 📊 Test Execution Results" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Test Suite:** \`${{ inputs.testName }}\`" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Summary Data" >> $GITHUB_STEP_SUMMARY
+              echo '```json' >> $GITHUB_STEP_SUMMARY
+              echo "$DONE_DATA" | python -m json.tool 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "$DONE_DATA" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️  No 'done' event found in output"
+            echo "This might indicate the test execution did not complete properly"
+          fi
+
+          echo "=========================================="
+
+      - name: Verify reports generated
+        run: |
+          echo "=========================================="
+          echo "📁 Checking Generated Reports"
+          echo "=========================================="
+
+          REPORT_DIR=$(ls -dt workspace/${{ inputs.testName }}/Report/*/ 2>/dev/null | head -n 1)
+          if [ -z "$REPORT_DIR" ]; then
+            echo "❌ Error: No report directory found!"
+            exit 1
+          fi
+
+          echo "✅ Latest report directory: $REPORT_DIR"
+          echo ""
+          echo "Report contents:"
+          ls -lh "$REPORT_DIR"
+          echo ""
+
+          # Verify key report files exist
+          echo "Verifying key report files:"
+          MISSING_FILES=0
+          for file in output.xml report.html log.html; do
+            if [ -f "${REPORT_DIR}${file}" ]; then
+              echo "  ✅ Found: $file"
+            else
+              echo "  ❌ Missing: $file"
+              MISSING_FILES=$((MISSING_FILES + 1))
+            fi
+          done
+
+          echo ""
+          echo "=========================================="
+
+          # Add report info to Summary
+          echo "## 📁 Generated Reports" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Report Directory:** \`${REPORT_DIR}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Available Files:**" >> $GITHUB_STEP_SUMMARY
+          for file in output.xml report.html log.html; do
+            if [ -f "${REPORT_DIR}${file}" ]; then
+              echo "- ✅ \`$file\`" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ \`$file\` (missing)" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Download full reports from the artifacts section below." >> $GITHUB_STEP_SUMMARY
+
+          if [ $MISSING_FILES -gt 0 ]; then
+            echo "⚠️  Warning: $MISSING_FILES file(s) missing"
+          fi
+
+      - name: Display server logs
+        if: always()
+        run: |
+          echo "=== Server Logs ==="
+          cat server.log || true
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) || true
+          fi
+
+      - name: Upload compiled tests and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ inputs.testName }}
+          path: |
+            workspace/${{ inputs.testName }}/
+            compile_response.json
+            sse_output.log
+          retention-days: 30
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-logs
+          path: server.log
+          retention-days: 7
+
+      - name: Display summary
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "🎯 Workflow Summary"
+          echo "=========================================="
+          echo "Test Suite: ${{ inputs.testName }}"
+          echo "Artifact Name: test-results-${{ inputs.testName }}"
+          echo ""
+          echo "✅ Workflow completed!"
+          echo "📦 Check artifacts below for compiled tests and reports"
+          echo "📊 View the Summary tab for detailed results"
+          echo "=========================================="
+
+          # Final summary to GitHub Actions Summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compiled Tests + Reports:** \`test-results-${{ inputs.testName }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Server Logs:** \`server-logs\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 💡 Download artifacts from the artifacts section at the top of this page." >> $GITHUB_STEP_SUMMARY
