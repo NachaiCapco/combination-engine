@@ -227,10 +227,25 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                     # This preserves: 200 as int, "200" as str, true as bool
                     assign_by_path(headers, field, normalized)
 
-        # Add default User-Agent if not specified to avoid bot blocking by Cloudflare/WAF
-        # Always set User-Agent to prevent 403 Forbidden from security services
-        if "User-Agent" not in headers:
-            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        # Add default browser headers if not specified to avoid bot blocking by Cloudflare/WAF
+        # Cloudflare checks multiple headers to detect bots, not just User-Agent
+        default_browser_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+        }
+
+        # Apply default headers only if not already specified by user
+        for key, value in default_browser_headers.items():
+            if key not in headers:
+                headers[key] = value
 
         params = {}
         for k, v in row.items():
