@@ -1,0 +1,180 @@
+name: "Health Check: Test Service Connectivity"
+
+on:
+  workflow_dispatch:
+    inputs:
+      health_url:
+        description: 'Health check endpoint URL'
+        required: true
+        default: 'https://vpms-dev.als-ib1-sglife-uat-az1-iosbn9.pru.intranet.asia/vpms-api/health'
+        type: string
+  schedule:
+    # Run health check every hour
+    - cron: '0 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'requirements.txt'
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set health URL
+        id: set-url
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            HEALTH_URL="${{ github.event.inputs.health_url }}"
+          else
+            HEALTH_URL="https://vpms-dev.als-ib1-sglife-uat-az1-iosbn9.pru.intranet.asia/vpms-api/health"
+          fi
+          echo "health_url=$HEALTH_URL" >> $GITHUB_OUTPUT
+          echo "Testing health endpoint: $HEALTH_URL"
+
+      - name: Check if testing local or remote
+        id: check-target
+        run: |
+          if [[ "${{ steps.set-url.outputs.health_url }}" == http://localhost* ]] || [[ "${{ steps.set-url.outputs.health_url }}" == http://127.0.0.1* ]]; then
+            echo "is_local=true" >> $GITHUB_OUTPUT
+            echo "Testing local endpoint - will start server"
+          else
+            echo "is_local=false" >> $GITHUB_OUTPUT
+            echo "Testing remote endpoint - skipping server setup"
+          fi
+
+      - name: Set up Python 3.14
+        if: steps.check-target.outputs.is_local == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.0'
+
+      - name: Install dependencies
+        if: steps.check-target.outputs.is_local == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Start FastAPI server
+        if: steps.check-target.outputs.is_local == 'true'
+        run: |
+          echo "=========================================="
+          echo "🚀 Starting FastAPI Server"
+          echo "=========================================="
+          uvicorn app.main:app --host 0.0.0.0 --port 3000 > server.log 2>&1 &
+          echo $! > server.pid
+          echo "Server PID: $(cat server.pid)"
+          sleep 5
+
+      - name: Wait for server to be ready
+        if: steps.check-target.outputs.is_local == 'true'
+        run: |
+          echo "=========================================="
+          echo "⏳ Waiting for server to be ready..."
+          echo "=========================================="
+          timeout 30 bash -c 'until curl -s http://localhost:3000/health > /dev/null; do
+            echo "Waiting for server..."
+            sleep 1
+          done' || {
+            echo "❌ Server failed to start within 30 seconds"
+            echo ""
+            echo "Server logs:"
+            cat server.log
+            exit 1
+          }
+          echo "✅ Server is ready!"
+
+      - name: Test health endpoint
+        id: health-test
+        run: |
+          echo "=========================================="
+          echo "🏥 Testing Health Endpoint"
+          echo "=========================================="
+          echo "URL: ${{ steps.set-url.outputs.health_url }}"
+          echo ""
+
+          # Make request and capture response
+          HTTP_CODE=$(curl -s -o health_response.txt -w "%{http_code}" ${{ steps.set-url.outputs.health_url }})
+          RESPONSE_BODY=$(cat health_response.txt)
+
+          echo "HTTP Status Code: $HTTP_CODE"
+          echo "Response Body: $RESPONSE_BODY"
+          echo ""
+
+          # Save to outputs
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "response_body=$RESPONSE_BODY" >> $GITHUB_OUTPUT
+
+          # Validate response
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Health check failed: HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          echo "✅ Health check passed: HTTP $HTTP_CODE"
+          echo "=========================================="
+
+      - name: Validate response content
+        run: |
+          echo "=========================================="
+          echo "✅ Validating Response Content"
+          echo "=========================================="
+
+          RESPONSE="${{ steps.health-test.outputs.response_body }}"
+          echo "Response: $RESPONSE"
+
+          # Check if response is not empty
+          if [ -z "$RESPONSE" ]; then
+            echo "❌ Response body is empty"
+            exit 1
+          fi
+
+          echo "✅ Response validation passed"
+          echo "=========================================="
+
+      - name: Display server logs
+        if: always() && steps.check-target.outputs.is_local == 'true'
+        run: |
+          echo "=========================================="
+          echo "📋 Server Logs"
+          echo "=========================================="
+          cat server.log || echo "No server logs found"
+
+      - name: Stop server
+        if: always() && steps.check-target.outputs.is_local == 'true'
+        run: |
+          if [ -f server.pid ]; then
+            echo "Stopping server (PID: $(cat server.pid))"
+            kill $(cat server.pid) || true
+          fi
+
+      - name: Upload server logs
+        if: always() && steps.check-target.outputs.is_local == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-check-server-logs
+          path: server.log
+          retention-days: 7
+
+      - name: Create health check summary
+        if: always()
+        run: |
+          echo "## 🏥 Health Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Endpoint:** \`${{ steps.set-url.outputs.health_url }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.health-test.outputs.http_code }}" = "200" ]; then
+            echo "**Status:** ✅ Healthy" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Status:** ❌ Unhealthy" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "**HTTP Status:** \`${{ steps.health-test.outputs.http_code }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Response:** \`${{ steps.health-test.outputs.response_body }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
