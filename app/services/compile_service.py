@@ -20,6 +20,7 @@ ROBOT_HEADER = """*** Settings ***
 Library    RequestsLibrary
 Library    JSONLibrary
 Library    Collections
+Library    BuiltIn
 Suite Setup    Create Session    api    {base_url}
 
 *** Test Cases ***
@@ -122,51 +123,35 @@ def parse_assertion(field_key: str, expected_raw: str):
     field, op, _ = parse_field_meta(field_key)
     return field, op, expected_raw
 
-def format_robot_value(value):
+def python_repr_for_robot(value):
     """
-    Format Python value to Robot Framework syntax.
-    
-    Handles:
-        None → ${None}
-        "" → ${EMPTY}
-        [] → @{EMPTY}
-        {} → &{EMPTY}
-        True/False → ${True}/${False}
-        Numbers → as-is
-        Strings → quoted if contains spaces
-    
+    Convert Python value to a repr string that can be used in Robot's Evaluate keyword.
+    This creates a Python expression that will be evaluated to create proper JSON.
+
     Args:
-        value: Python value to format
-    
+        value: Python value (None, bool, int, float, str, list, dict)
+
     Returns:
-        str: Robot Framework formatted value
+        str: Python repr string
     """
     if value is None:
-        return "${None}"
-    if value == "":
-        return "${EMPTY}"
-    if isinstance(value, list):
-        if len(value) == 0:
-            return "@{EMPTY}"
-        # For non-empty lists, convert to Robot list syntax
-        items = "    ".join([format_robot_value(item) for item in value])
-        return f"[{items}]"  # Note: May need Create List keyword for complex cases
-    if isinstance(value, dict):
-        if len(value) == 0:
-            return "&{EMPTY}"
-        # For non-empty dicts, we'll need Create Dictionary
-        # This is handled in the calling code
-        return value
+        return "None"
     if isinstance(value, bool):
-        return "${True}" if value else "${False}"
+        return "True" if value else "False"
     if isinstance(value, (int, float)):
         return str(value)
-    # String value
-    s = str(value)
-    # Quote if contains spaces or special chars
-    if " " in s or any(c in s for c in ["$", "{", "}", "@", "&"]):
-        return f'"{s}"'
-    return s
+    if isinstance(value, str):
+        # Escape backslashes and quotes
+        escaped = value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+        return f'"{escaped}"'
+    if isinstance(value, list):
+        items = ', '.join([python_repr_for_robot(item) for item in value])
+        return f'[{items}]'
+    if isinstance(value, dict):
+        items = ', '.join([f'"{k}": {python_repr_for_robot(v)}' for k, v in value.items()])
+        return f'{{{items}}}'
+    # Fallback
+    return repr(value)
 
 def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
     df = pd.read_excel(excel_path, sheet_name=0, dtype=str).fillna("")
@@ -263,22 +248,23 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
         lines.append(f"    Log    Method: {method}    console=yes")
         lines.append(f"    Log    Endpoint: {endpoint}    console=yes")
         
-        # Build request parameters - use Create Dictionary with proper value formatting
+        # Build request parameters - use Evaluate to create Python dicts with proper JSON types
+        # This ensures None → null, True/False → true/false in JSON
         if headers:
-            dict_str = "    ".join([f"{k}={format_robot_value(v)}" for k, v in headers.items()])
-            lines.append(f"    ${'{'}headers{'}'}=    Create Dictionary    {dict_str}")
+            py_dict = python_repr_for_robot(headers)
+            lines.append(f"    ${'{'}headers{'}'}=    Evaluate    {py_dict}")
             lines.append(f"    Log    Headers: ${'{'}headers{'}'}    console=yes")
         if params:
-            dict_str = "    ".join([f"{k}={format_robot_value(v)}" for k, v in params.items()])
-            lines.append(f"    ${'{'}params{'}'}=    Create Dictionary    {dict_str}")
+            py_dict = python_repr_for_robot(params)
+            lines.append(f"    ${'{'}params{'}'}=    Evaluate    {py_dict}")
             lines.append(f"    Log    Params: ${'{'}params{'}'}    console=yes")
         if query:
-            dict_str = "    ".join([f"{k}={format_robot_value(v)}" for k, v in query.items()])
-            lines.append(f"    ${'{'}query{'}'}=    Create Dictionary    {dict_str}")
+            py_dict = python_repr_for_robot(query)
+            lines.append(f"    ${'{'}query{'}'}=    Evaluate    {py_dict}")
             lines.append(f"    Log    Query: ${'{'}query{'}'}    console=yes")
         if body:
-            dict_str = "    ".join([f"{k}={format_robot_value(v)}" for k, v in body.items()])
-            lines.append(f"    ${'{'}payload{'}'}=    Create Dictionary    {dict_str}")
+            py_dict = python_repr_for_robot(body)
+            lines.append(f"    ${'{'}payload{'}'}=    Evaluate    {py_dict}")
             lines.append(f"    Log    Body: ${'{'}payload{'}'}    console=yes")
         
         # Build API call with only the parameters that exist
