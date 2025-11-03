@@ -251,8 +251,8 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
         lines.append(f"    Log    Method: {method}    console=yes")
         lines.append(f"    Log    Endpoint: {endpoint}    console=yes")
         
-        # Build request parameters - use Evaluate to create Python dicts with proper JSON types
-        # This ensures None → null, True/False → true/false in JSON
+        # Build request parameters - use Evaluate to create Python dicts, then Convert To JSON
+        # This ensures proper JSON serialization: None → null, True/False → true/false
         if headers:
             py_dict = python_repr_for_robot(headers)
             lines.append(f"    ${'{'}headers{'}'}=    Evaluate    {py_dict}")
@@ -267,17 +267,26 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
             lines.append(f"    Log    Query: ${'{'}query{'}'}    console=yes")
         if body:
             py_dict = python_repr_for_robot(body)
-            lines.append(f"    ${'{'}payload{'}'}=    Evaluate    {py_dict}")
+            lines.append(f"    ${'{'}payload_dict{'}'}=    Evaluate    {py_dict}")
+            # Convert dict to proper JSON string with lowercase true/false/null
+            lines.append(f"    ${'{'}payload{'}'}=    Convert To JSON    ${'{'}payload_dict{'}'}")
             lines.append(f"    Log    Body: ${'{'}payload{'}'}    console=yes")
-        
+
+        # Ensure Content-Type header is set when sending JSON
+        if body and headers:
+            lines.append(f"    Set To Dictionary    ${'{'}headers{'}'}    Content-Type=application/json")
+        elif body:
+            lines.append(f"    ${'{'}headers{'}'}=    Create Dictionary    Content-Type=application/json")
+
         # Build API call with only the parameters that exist
         call_parts = [f"${'{'}resp{'}'}=", f"{method} On Session", "api", endpoint]
         if query:
             call_parts.append(f"params=${'{'}query{'}'}")
-        if headers:
+        if headers or body:
             call_parts.append(f"headers=${'{'}headers{'}'}")
         if body:
-            call_parts.append(f"json=${'{'}payload{'}'}")
+            # Use data= parameter with JSON string for proper serialization
+            call_parts.append(f"data=${'{'}payload{'}'}")
         
         # Always add expected_status=any to prevent RequestsLibrary from raising HTTPError
         # This allows the test to validate the actual status code instead
