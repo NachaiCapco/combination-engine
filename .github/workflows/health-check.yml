@@ -8,18 +8,10 @@ on:
         required: true
         default: 'https://vpms-dev.als-ib1-sglife-uat-az1-iosbn9.pru.intranet.asia/vpms-api/health'
         type: string
-  schedule:
-    # Run health check every hour
-    - cron: '0 * * * *'
-  push:
-    branches: [main]
-    paths:
-      - 'app/**'
-      - 'requirements.txt'
 
 jobs:
   health-check:
-    runs-on: ubuntu-latest
+    runs-on: pru-pacs-all-nprd-linux-runner-01
 
     steps:
       - name: Checkout repository

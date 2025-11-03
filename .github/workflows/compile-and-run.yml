@@ -16,7 +16,7 @@ on:
 
 jobs:
   compile-and-run:
-    runs-on: ubuntu-latest
+    runs-on: pru-pacs-all-nprd-linux-runner-01
 
     steps:
       - name: Checkout repository
