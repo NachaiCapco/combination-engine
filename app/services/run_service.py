@@ -64,7 +64,11 @@ async def run_robot_streaming(gen_dir: Path, report_dir: Path) -> AsyncGenerator
     # Run Robot Framework with --console verbose for real-time output
     # Use subprocess.Popen with threading for cross-platform compatibility
     cmd = ["robot", "--console", "verbose", "--outputdir", str(out_dir), str(gen_dir)]
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    env = {
+        **os.environ,
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8"  # Force UTF-8 encoding on all platforms
+    }
 
     # Start subprocess
     proc = subprocess.Popen(
@@ -114,7 +118,9 @@ async def run_robot_streaming(gen_dir: Path, report_dir: Path) -> AsyncGenerator
                 process_running = False
                 break
             elif msg_type == 'line':
-                line = data.decode('utf-8').rstrip()
+                # Use errors='replace' to handle non-UTF-8 bytes gracefully
+                # On Windows, subprocess output may contain characters from different encodings
+                line = data.decode('utf-8', errors='replace').rstrip()
 
                 # Check for test result first (has priority)
                 result_match = test_result_pattern.match(line)
