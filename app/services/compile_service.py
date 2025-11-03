@@ -266,7 +266,11 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
 
         lines = [ROBOT_HEADER.format(base_url=base_url)]
         lines.append(f"{tc_name}")
-        
+
+        # Add delay to prevent rate limiting and bot detection
+        # This makes execution pattern look more human-like and avoids triggering Cloudflare
+        lines.append(f"    Sleep    0.5s")
+
         # Log API request details
         lines.append(f"    Log    ========== REQUEST ==========    console=yes")
         lines.append(f"    Log    Method: {method}    console=yes")
