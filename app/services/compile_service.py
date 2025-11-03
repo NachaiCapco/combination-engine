@@ -253,14 +253,21 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
         lines.append(f"    Log    Endpoint: {endpoint}    console=yes")
         
         # Build request parameters
-        # For headers: convert all values to strings (HTTP headers must be strings)
+        # For headers: use Create Dictionary with proper string formatting
+        # HTTP headers MUST be strings per HTTP spec and urllib3 validation
         # For body: use json.dumps() for proper JSON serialization (None → null, True/False → true/false)
         if headers:
-            # Convert all header values to strings using Python's str() function
-            # This ensures compatibility with RequestsLibrary which requires string header values
-            py_dict = python_repr_for_robot(headers)
-            lines.append(f"    ${'{'}headers_raw{'}'}=    Evaluate    {py_dict}")
-            lines.append(f"    ${'{'}headers{'}'}=    Evaluate    {{k: str(v) for k, v in $headers_raw.items()}}")
+            # Build Create Dictionary line with key=value pairs
+            # All values are formatted as their literal representation for Robot
+            dict_items = []
+            for k, v in headers.items():
+                # Escape special characters in key
+                key_escaped = k.replace('=', '\\=').replace(' ', '\\ ')
+                # Format value as string representation
+                value_str = str(v)
+                dict_items.append(f"{key_escaped}={value_str}")
+
+            lines.append(f"    ${'{'}headers{'}'}=    Create Dictionary    {'    '.join(dict_items)}")
             lines.append(f"    Log    Headers: ${'{'}headers{'}'}    console=yes")
         if params:
             py_dict = python_repr_for_robot(params)
