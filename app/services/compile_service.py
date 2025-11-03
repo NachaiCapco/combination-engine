@@ -223,8 +223,16 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                 field = k.replace("[Request][Header]", "")
                 normalized = normalize_cell(v)
                 if normalized is not None or str(v).strip().upper() == "[NULL]":
+                    # HTTP headers must have string values - convert all to strings
+                    # Convert: 200 → "200", True → "True", None → "null"
+                    if normalized is None:
+                        string_value = "null"
+                    elif isinstance(normalized, bool):
+                        string_value = "true" if normalized else "false"
+                    else:
+                        string_value = str(normalized)
                     # Headers are typically flat, but support nesting if needed
-                    assign_by_path(headers, field, normalized)
+                    assign_by_path(headers, field, string_value)
 
         params = {}
         for k, v in row.items():
