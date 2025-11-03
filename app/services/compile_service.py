@@ -251,8 +251,8 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
         lines.append(f"    Log    Method: {method}    console=yes")
         lines.append(f"    Log    Endpoint: {endpoint}    console=yes")
         
-        # Build request parameters - use Evaluate to create Python dicts, then Convert To JSON
-        # This ensures proper JSON serialization: None → null, True/False → true/false
+        # Build request parameters - use json.dumps() for proper JSON serialization
+        # This ensures proper JSON types: None → null, True/False → true/false
         if headers:
             py_dict = python_repr_for_robot(headers)
             lines.append(f"    ${'{'}headers{'}'}=    Evaluate    {py_dict}")
@@ -267,9 +267,9 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
             lines.append(f"    Log    Query: ${'{'}query{'}'}    console=yes")
         if body:
             py_dict = python_repr_for_robot(body)
-            lines.append(f"    ${'{'}payload_dict{'}'}=    Evaluate    {py_dict}")
-            # Convert dict to proper JSON string with lowercase true/false/null
-            lines.append(f"    ${'{'}payload{'}'}=    Convert To JSON    ${'{'}payload_dict{'}'}")
+            # Use json.dumps() to properly serialize Python dict to JSON string
+            # This converts: True → true, False → false, None → null
+            lines.append(f"    ${'{'}payload{'}'}=    Evaluate    json.dumps({py_dict})    modules=json")
             lines.append(f"    Log    Body: ${'{'}payload{'}'}    console=yes")
 
         # Ensure Content-Type header is set when sending JSON
