@@ -223,16 +223,9 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                 field = k.replace("[Request][Header]", "")
                 normalized = normalize_cell(v)
                 if normalized is not None or str(v).strip().upper() == "[NULL]":
-                    # HTTP headers must have string values - convert all to strings
-                    # Convert: 200 → "200", True → "True", None → "null"
-                    if normalized is None:
-                        string_value = "null"
-                    elif isinstance(normalized, bool):
-                        string_value = "true" if normalized else "false"
-                    else:
-                        string_value = str(normalized)
-                    # Headers are typically flat, but support nesting if needed
-                    assign_by_path(headers, field, string_value)
+                    # Keep original type (int, bool, str) for headers
+                    # This preserves: 200 as int, "200" as str, true as bool
+                    assign_by_path(headers, field, normalized)
 
         params = {}
         for k, v in row.items():
@@ -259,11 +252,27 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
         lines.append(f"    Log    Method: {method}    console=yes")
         lines.append(f"    Log    Endpoint: {endpoint}    console=yes")
         
-        # Build request parameters - use json.dumps() for proper JSON serialization
-        # This ensures proper JSON types: None → null, True/False → true/false
+        # Build request parameters
+        # For headers: use Create Dictionary to preserve types (int/str/bool)
+        # For body: use json.dumps() for proper JSON serialization (None → null, True/False → true/false)
         if headers:
-            py_dict = python_repr_for_robot(headers)
-            lines.append(f"    ${'{'}headers{'}'}=    Evaluate    {py_dict}")
+            # Generate Create Dictionary arguments: key1=value1  key2=value2
+            dict_args = []
+            for k, v in headers.items():
+                # Format value based on type
+                if v is None:
+                    value_str = "${None}"
+                elif isinstance(v, bool):
+                    value_str = "${True}" if v else "${False}"
+                elif isinstance(v, str):
+                    # Escape the string value
+                    escaped = v.replace('\\', '\\\\').replace('"', '\\"')
+                    value_str = f'"{escaped}"'
+                else:
+                    # int, float - use as-is
+                    value_str = str(v)
+                dict_args.append(f"{k}={value_str}")
+            lines.append(f"    ${'{'}headers{'}'}=    Create Dictionary    {' '.join(dict_args) if dict_args else ''}")
             lines.append(f"    Log    Headers: ${'{'}headers{'}'}    console=yes")
         if params:
             py_dict = python_repr_for_robot(params)
