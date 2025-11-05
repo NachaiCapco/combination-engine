@@ -196,26 +196,89 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                 key = field_name + (":" + op if op != "eq" else "")
                 expected_header[key] = (v, dtype)
         
-        # Extract request data
+        # Extract request data with array expansion support
         # Support sentinel values: [EMPTY], [NULL], [EMPTY_ARRAY], [EMPTY_OBJECT]
         # normalize_cell() converts these to "", None, [], {}
-        # Use assign_by_path() to build nested JSON structures from dot-notation paths
-        body = {}
+        # Support array expansion: data.clientProfiles[].field with comma-separated values
+        # Example: data.clientProfiles[].clientType = "ML,O" creates 2 array items
+
+        # First pass: collect all body fields and detect array expansion patterns
+        body_fields = {}
+        array_expansion_map = {}  # Track which arrays need expansion
+
         for k, v in row.items():
             if k.startswith("[Request][Body]"):
                 field = k.replace("[Request][Body]", "")
-                # Normalize the value to handle sentinel keywords
+                # Strip type markers from field name: [Type:bool], [Type:int], etc.
+                # Extract the clean field name without type information
+                field_clean = re.sub(r'\[Type:[^\]]+\]', '', field)
+
                 normalized = normalize_cell(v)
-                # Include field if:
-                # 1. normalized is explicitly "" (empty string sentinel [EMPTY])
-                # 2. normalized is explicitly [] (empty array sentinel [EMPTY_ARRAY])
-                # 3. normalized is explicitly {} (empty object sentinel [EMPTY_OBJECT])
-                # 4. normalized is None and original was [NULL] (include as JSON null)
-                # 5. normalized has actual content
-                # Skip only if normalized is None AND original was blank/empty
+
                 if normalized is not None or str(v).strip().upper() == "[NULL]":
-                    # Use assign_by_path to build nested structure from paths like "data.agent.agentName"
-                    assign_by_path(body, field, normalized)
+                    # Check if this field uses array expansion notation []
+                    if "[]" in field_clean:
+                        # Extract the array path (e.g., "data.clientProfiles")
+                        array_path = field_clean.split("[]")[0].rstrip(".")
+                        field_name = field_clean.split("[]")[1].lstrip(".") if "[]" in field_clean and len(field_clean.split("[]")) > 1 else ""
+
+                        # Check if value contains comma (expansion trigger)
+                        if isinstance(normalized, str) and "," in normalized:
+                            # Split comma-separated values
+                            values = [val.strip() for val in normalized.split(",")]
+                            if array_path not in array_expansion_map:
+                                array_expansion_map[array_path] = {"count": len(values), "fields": {}}
+                            else:
+                                # Update count if this field has more items
+                                array_expansion_map[array_path]["count"] = max(
+                                    array_expansion_map[array_path]["count"],
+                                    len(values)
+                                )
+                            # Store the split values for this field
+                            array_expansion_map[array_path]["fields"][field_name] = values
+                        else:
+                            # Single value - will be duplicated across all array items
+                            if array_path not in array_expansion_map:
+                                array_expansion_map[array_path] = {"count": 1, "fields": {}}
+                            array_expansion_map[array_path]["fields"][field_name] = normalized
+                    else:
+                        # Regular field without array expansion
+                        body_fields[field_clean] = normalized
+
+        # Second pass: build the body with expanded arrays
+        body = {}
+
+        # First, process regular fields
+        for field, value in body_fields.items():
+            assign_by_path(body, field, value)
+
+        # Then, process array expansions
+        for array_path, expansion_info in array_expansion_map.items():
+            count = expansion_info["count"]
+            fields = expansion_info["fields"]
+
+            # Create array items
+            array_items = []
+            for idx in range(count):
+                item = {}
+                for field_name, value in fields.items():
+                    if isinstance(value, list):
+                        # Use the corresponding value from the split list
+                        item_value = value[idx] if idx < len(value) else value[-1]
+                    else:
+                        # Duplicate the single value across all items
+                        item_value = value
+
+                    # Build nested structure within the array item
+                    if "." in field_name:
+                        assign_by_path(item, field_name, item_value)
+                    else:
+                        item[field_name] = item_value
+
+                array_items.append(item)
+
+            # Assign the expanded array to the body
+            assign_by_path(body, array_path, array_items)
 
         headers = {}
         for k, v in row.items():
@@ -362,8 +425,52 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
             for raw_key, (expected_value_raw, dtype) in expected_body.items():
                 field_name, op, _ = parse_field_meta(raw_key)
                 expected_value = cast_value(expected_value_raw, dtype)
-                
-                # Get value from JSON
+
+                # Check if this uses array search notation []
+                if "[]" in field_name:
+                    # Array search: data.eligibleProducts[].prodCode
+                    # Split into array_path and search_field
+                    parts = field_name.split("[]")
+                    array_path = parts[0].rstrip(".")
+                    search_field = parts[1].lstrip(".") if len(parts) > 1 and parts[1] else ""
+
+                    # Generate code to search through array
+                    lines.append(f"    # Search array: {field_name}")
+                    lines.append(f"    ${'{'}array{'}'}=    Get Value From Json    ${'{'}json{'}'}    $.{array_path}")
+                    lines.append(f"    ${'{'}found{'}'}=    Set Variable    ${{False}}")
+                    lines.append(f"    FOR    ${'{'}item{'}'}    IN    @{'{'}array[0]{'}'}")
+
+                    if search_field:
+                        # Search for specific field in array items
+                        if "." in search_field:
+                            # Nested field: use Evaluate to access
+                            search_expr = ".".join([f"$item['{part}']" for part in search_field.split(".")])
+                            lines.append(f"        ${'{'}item_value{'}'}=    Evaluate    {search_expr}")
+                        else:
+                            # Simple field
+                            lines.append(f"        ${'{'}item_value{'}'}=    Set Variable    ${'{'}item[{repr(search_field)}]{'}'}")
+
+                        # Check if value matches
+                        # Use Robot's Run Keyword And Return Status for safe comparison
+                        lines.append(f"        ${'{'}matches{'}'}=    Run Keyword And Return Status    Should Be Equal    ${'{'}item_value{'}'}    {expected_value}")
+                        lines.append(f"        IF    ${'{'}matches{'}'}")
+                        lines.append(f"            ${'{'}found{'}'}=    Set Variable    ${{True}}")
+                        lines.append(f"            Exit For Loop")
+                        lines.append(f"        END")
+                    else:
+                        # Search for value directly in array (no field specified)
+                        # Use Robot's Run Keyword And Return Status for safe comparison
+                        lines.append(f"        ${'{'}matches{'}'}=    Run Keyword And Return Status    Should Be Equal    ${'{'}item{'}'}    {expected_value}")
+                        lines.append(f"        IF    ${'{'}matches{'}'}")
+                        lines.append(f"            ${'{'}found{'}'}=    Set Variable    ${{True}}")
+                        lines.append(f"            Exit For Loop")
+                        lines.append(f"        END")
+
+                    lines.append(f"    END")
+                    lines.append(f"    Should Be True    ${'{'}found{'}'}    msg=Value '{expected_value}' not found in array {field_name}")
+                    continue
+
+                # Regular field validation (no array search)
                 lines.append(f"    ${'{'}value{'}'}=    Get Value From Json    ${'{'}json{'}'}    $.{field_name}")
                 
                 # Type and structure validation operators
@@ -406,8 +513,9 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                     elif dtype in ("float", "double", "number"):
                         lines.append(f"    Should Be Equal As Numbers    ${'{'}value[0]{'}'}    {expected_value}")
                     elif dtype in ("bool", "boolean"):
-                        bool_str = "True" if expected_value else "False"
-                        lines.append(f"    Should Be Equal    ${'{'}value[0]{'}'}    {bool_str}")
+                        # Use Robot Framework's built-in boolean variables ${True} and ${False}
+                        bool_var = "${True}" if expected_value else "${False}"
+                        lines.append(f"    Should Be Equal    ${'{'}value[0]{'}'}    {bool_var}")
                     else:
                         lines.append(f"    Should Be Equal    ${'{'}value[0]{'}'}    {expected_value}")
                 elif op == "ne":
