@@ -90,7 +90,7 @@ headers = [
 # Sample data row - using comma-separated clientType to create 2 array items
 data_row = [
     # API Configuration
-    "https://mockoon-api.techlabth.com/api/combination-data",
+    "http://localhost:3003/api/combination-data",
     "POST",
 
     # Request Headers
