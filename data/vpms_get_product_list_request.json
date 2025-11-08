@@ -22,7 +22,7 @@
         {
           "id": "7e3fe367-4acc-4bc1-a522-461ab94ecfc9",
           "clientType": "ML",
-          "relationship": "QS",
+          "relationship": "OS",
           "personalInfo": {
             "isSmoker": true,
             "dob": "02.09.1998",
@@ -54,8 +54,8 @@
         },
         {
           "id": "7e3fe367-4acc-4bc1-a522-461ab94ecfc9",
-          "clientType": "OW",
-          "relationship": "QS",
+          "clientType": "O",
+          "relationship": "OS",
           "personalInfo": {
             "isSmoker": true,
             "dob": "02.09.1998",

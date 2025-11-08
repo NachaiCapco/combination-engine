@@ -13,6 +13,89 @@ EXPECTED_PREFIXES = (
     "[Request][Body]",
 )
 
+def expand_array_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expand columns with [] notation into indexed columns [0], [1], [2], etc.
+
+    Example:
+        Input column: [Request][Body]data.clientProfiles[].age
+        Input value: "25,30,35"
+        Output columns:
+            - [Request][Body]data.clientProfiles[0].age = 25
+            - [Request][Body]data.clientProfiles[1].age = 30
+            - [Request][Body]data.clientProfiles[2].age = 35
+    """
+    # Find columns with [] notation
+    array_columns = {}  # {base_path: [col_names]}
+
+    for col in df.columns:
+        if '[]' in col:
+            # Extract the base path (everything before [])
+            base = col.split('[]')[0] + '[]'
+            if base not in array_columns:
+                array_columns[base] = []
+            array_columns[base].append(col)
+
+    if not array_columns:
+        # No array columns, return as-is
+        return df
+
+    # Determine max array size by inspecting all values
+    max_array_size = 0
+    for col in df.columns:
+        if '[]' in col:
+            for val in df[col]:
+                if pd.notna(val) and val != "":
+                    # Split by comma to count array elements
+                    parts = str(val).split(',')
+                    max_array_size = max(max_array_size, len(parts))
+
+    if max_array_size == 0:
+        # No data to expand
+        return df
+
+    # Create new dataframe with expanded columns
+    new_columns = []
+    new_data = []
+
+    # Process each column
+    for col in df.columns:
+        if '[]' not in col:
+            # Non-array column - keep as-is
+            new_columns.append(col)
+        else:
+            # Array column - expand into [0], [1], [2], etc.
+            for idx in range(max_array_size):
+                expanded_col = col.replace('[]', f'[{idx}]')
+                new_columns.append(expanded_col)
+
+    # Process each row
+    for _, row in df.iterrows():
+        new_row = []
+        for col in df.columns:
+            if '[]' not in col:
+                # Non-array column - copy value as-is
+                new_row.append(row[col])
+            else:
+                # Array column - split and distribute values
+                val = row[col]
+                if pd.notna(val) and val != "":
+                    # Split by comma
+                    parts = [p.strip() for p in str(val).split(',')]
+                    # Pad with empty strings if needed
+                    while len(parts) < max_array_size:
+                        parts.append("")
+                    new_row.extend(parts[:max_array_size])
+                else:
+                    # Empty value - fill with empty strings
+                    new_row.extend([""] * max_array_size)
+
+        new_data.append(new_row)
+
+    # Create new dataframe
+    new_df = pd.DataFrame(new_data, columns=new_columns)
+    return new_df
+
 def build_combination_excel(content: bytes, filename: str) -> bytes:
     df = U.read_table(content, filename, allow_different_lengths=True)
     headers = [str(h).strip() for h in list(df.columns)]
@@ -69,6 +152,9 @@ def build_combination_excel(content: bytes, filename: str) -> bytes:
         out_rows.append(out_row)
 
     out_df = pd.DataFrame(out_rows, columns=headers)
+
+    # Expand array notation: columns with [] get expanded to [0], [1], [2], etc.
+    out_df = expand_array_columns(out_df)
     
     # Use centralized note data
     note_df = pd.DataFrame(get_note_data())
