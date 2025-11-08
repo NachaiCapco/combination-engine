@@ -187,14 +187,18 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
             if k.startswith("[Response][Body]"):
                 raw = k.replace("[Response][Body]", "", 1)
                 field_name, op, dtype = parse_field_meta(raw)
+                # Normalize expected value to handle sentinel values like [EMPTY_ARRAY], [NULL], etc.
+                normalized_v = normalize_cell(v)
                 # Store as tuple: (value, data_type)
                 key = field_name + (":" + op if op != "eq" else "")
-                expected_body[key] = (v, dtype)
+                expected_body[key] = (normalized_v, dtype)
             elif k.startswith("[Response][Header]"):
                 raw = k.replace("[Response][Header]", "", 1)
                 field_name, op, dtype = parse_field_meta(raw)
+                # Normalize expected value to handle sentinel values
+                normalized_v = normalize_cell(v)
                 key = field_name + (":" + op if op != "eq" else "")
-                expected_header[key] = (v, dtype)
+                expected_header[key] = (normalized_v, dtype)
         
         # Extract request data with array expansion support
         # Support sentinel values: [EMPTY], [NULL], [EMPTY_ARRAY], [EMPTY_OBJECT]
@@ -508,7 +512,19 @@ def generate_robot_cases_from_excel(excel_path: Path, gen_dir: Path):
                         lines.append(f"    Should Be True    ${'{'}num{'}'} >= {low} and ${'{'}num{'}'} <= {high}")
                 # Value comparison operators
                 elif op == "eq":
-                    if dtype in ("int", "integer"):
+                    # Handle normalized sentinel values
+                    if expected_value == []:  # Empty array from [EMPTY_ARRAY]
+                        lines.append(f"    Should Be Empty    ${'{'}value[0]{'}'}")
+                        lines.append(f"    Should Be True    isinstance(${'{'}value[0]{'}'}, list)")
+                    elif expected_value == {}:  # Empty object from [EMPTY_OBJECT]
+                        lines.append(f"    Should Be Empty    ${'{'}value[0]{'}'}")
+                        lines.append(f"    Should Be True    isinstance(${'{'}value[0]{'}'}, dict)")
+                    elif expected_value is None:  # Null from [NULL]
+                        lines.append(f"    Should Be Equal    ${'{'}value[0]{'}'}    ${'{'}None{'}'}")
+                    elif expected_value == "":  # Empty string from [EMPTY] or [EMPTY_STRING]
+                        lines.append(f"    Should Be Empty    ${'{'}value[0]{'}'}")
+                        lines.append(f"    Should Be True    isinstance(${'{'}value[0]{'}'}, str)")
+                    elif dtype in ("int", "integer"):
                         lines.append(f"    Should Be Equal As Integers    ${'{'}value[0]{'}'}    {expected_value}")
                     elif dtype in ("float", "double", "number"):
                         lines.append(f"    Should Be Equal As Numbers    ${'{'}value[0]{'}'}    {expected_value}")
