@@ -9,6 +9,7 @@ from app.routers.run_router import router as run_router
 from app.routers.download_router import router as download_router
 from app.routers.github_router import router as github_router
 from app.routers.health_router import router as health_router
+from app.routers.vpms_router import router as vpms_router
 
 # Fix for Windows: Set event loop policy to support subprocesses
 # The default ProactorEventLoop on Windows doesn't support subprocess operations
@@ -63,3 +64,4 @@ app.include_router(compile_router)
 app.include_router(run_router)
 app.include_router(download_router)
 app.include_router(github_router)
+app.include_router(vpms_router)
